@@ -244,7 +244,6 @@ local function on_power_device_properties_changed(properties)
 	if state == 5 or state == 1 then
 		battery_icon = battery_icon .. "-charging"
 	end
-	print(battery_icon)
 
 	-- simple fix to prevent issues when upower doesnt fire the state changed event sometimes (this sucks)
 	-- TODO: find a better way to fix this instead of basically a band-aid fix
