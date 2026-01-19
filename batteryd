@@ -394,7 +394,6 @@ while device_array_iterator:has_next() do
 	-- TODO: monitor stuff like bluetooth devices instead of only the laptop's power supply
 	if is_power_supply == true then
 		print(string.format("monitoring %s", device))
-		conn:flush()
 
 		local state = upower_method_call(conn, device, "org.freedesktop.DBus.Properties", "Get", {
 			{ type = "s", value = "org.freedesktop.UPower.Device" },
