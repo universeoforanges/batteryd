@@ -361,8 +361,6 @@ if not parse_conf((os.getenv("HOME") or "~") .. "/.config/batteryd/config") then
 	parse_conf("./config")
 end
 
-os.execute(config.on_ac_power)
-
 local conn, conn_err = ldbus.bus.get("system")
 if conn == nil then
 	print(string.format("failed to get system bus (%s)", conn_err or "unknown error"))
@@ -398,6 +396,19 @@ while device_array_iterator:has_next() do
 		print(string.format("monitoring %s", device))
 		conn:flush()
 
+		local state = upower_method_call(conn, device, "org.freedesktop.DBus.Properties", "Get", {
+			{ type = "s", value = "org.freedesktop.UPower.Device" },
+			{ type = "s", value = "State" }
+		})
+
+		if state ~= nil then
+			if state == 1 or state == 4 or state == 5 then
+				os.execute(config.on_ac_power)
+			else
+				os.execute(config.on_dc_power)
+			end
+		end
+
 		local properties, properties_fetch_error = upower_method_call(conn, device, "org.freedesktop.DBus.Properties", "GetAll", {
 			{ type = "s", value = "org.freedesktop.UPower.Device" }
 		})
@@ -412,6 +423,8 @@ while device_array_iterator:has_next() do
 
 	device_array_iterator:next()
 end
+
+assert(#monitored_devices > 0, "there are no power devices to monitor")
 
 while true do
 	conn:read_write(1000)
