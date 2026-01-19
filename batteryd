@@ -1,0 +1,423 @@
+#!/usr/bin/env lua5.1
+
+local ldbus = require("ldbus")
+
+local config = {
+	use_stdout = false,
+	warn_on_low_battery = true,
+	warn_on_crit_battery = true,
+	warn_on_state_change = true,
+
+	reserve_power_threshold = 20,
+	low_battery_threshold = 20,
+	crit_battery_threshold = 10,
+	action_threshold = 5,
+
+	on_dc_power = "",
+	on_ac_power = "",
+	on_low_battery = "",
+	on_crit_battery = "",
+	on_reserve_cleared = "",
+	on_low_warning_cleared = "",
+	on_crit_warning_cleared = "",
+	on_reserve = "",
+	action_cmd = "systemctl poweroff -i"
+}
+
+local prev_state = {}
+local warnings = {}
+
+-- utility
+local function starts_with(x, y)
+	assert(x ~= nil or y ~= nil, "starts_with(): invalid usage")
+	return string.sub(x, 1, string.len(y)) == y
+end
+
+local function split(str, seperator)
+	assert(str ~= nil, "split(): invalid usage")
+
+	if seperator == nil then
+		seperator = "%s"
+	end
+
+	local t = {}
+	for s in string.gmatch(str, "([^" .. seperator .. "]+)") do
+		table.insert(t, s)
+	end
+
+	return t
+end
+
+local function table_find(haystack, needle)
+	for _, v in ipairs(haystack) do
+		if v == needle then
+			return v
+		end
+	end
+
+	return nil
+end
+
+local function parse_conf(fpath)
+	assert(fpath ~= nil, "parse_conf(): invalid usage")
+
+	local file = io.open(fpath, "r")
+	if file == nil then
+		print("could not open configuration file " .. fpath .. " for reading")
+		return false
+	end
+
+	local line_num = 1
+	for line in file:lines() do
+		-- no += operator or continue statement in vanilla lua -_-
+		line_num = line_num + 1
+
+		if not starts_with(line, "#") and string.len(line) ~= 0 then
+			local config_line = split(line, "=")
+			if #config_line < 2 then
+				file:close()
+				print(fpath .. ":" .. line_num .. " expected a left and right hand side")
+
+				return false
+			end
+
+			local left_hand = string.lower(config_line[1])
+			local right_hand = config_line[2]
+
+			if type(config[left_hand]) == "number" then
+				local success, result = pcall(function()
+					right_hand = tonumber(right_hand)
+				end)
+
+				if not success then
+					file:close()
+					print(fpath .. ":" .. line_num .. " could not convert string " .. right_hand .. " to a number, due to the following error: " .. result)
+
+					return false
+				end
+			elseif type(config[left_hand]) == "boolean" then
+				right_hand = right_hand == "true" or right_hand == "1"
+			elseif type(config[left_hand]) ~= "string" then
+				file:close()
+				print(fpath .. ":" .. line_num .. " unsupported default config type " .. type(config[left_hand]))
+
+				return false
+			end
+
+			if type(config[left_hand]) ~= type(right_hand) then
+				file:close()
+				print(fpath .. ":" .. line_num .. " config option " .. left_hand .. " of type " .. type(right_hand) .. " doesn't match the correct type of " .. type(config[left_hand]))
+
+				return false
+			end
+
+			config[left_hand] = right_hand
+		end
+	end
+
+	file:close()
+	return true
+end
+
+local function upower_method_call(conn, path, interface, method, arguments)
+	assert(conn ~= nil and path ~= nil and interface ~= nil and method ~= nil, "upower_method_call(): invalid usage")
+
+	local message = ldbus.message.new_method_call("org.freedesktop.UPower", path, interface, method)
+	if message == nil then
+		print("upower_method_call(): new_method_call() failed")
+		return nil
+	end
+
+	if arguments ~= nil then
+		local iterator = message:iter_init_append()
+		for i, arg in ipairs(arguments) do
+			if arg["value"] ~= nil and arg["type"] ~= nil then
+				iterator:append_basic(arg.value, arg.type)
+			else
+				print(string.format("upower_method_call(): ignoring argument #%d, invalid table format", i))
+			end
+		end
+	end
+
+	local reply, reply_err = conn:send_with_reply_and_block(message)
+	if reply == nil then
+		print(string.format("upower_method_call(): send_with_reply_and_block() failed (%s)", reply_err))
+		return nil, reply_err
+	end
+
+	return reply, nil, message
+end
+
+local function notify(summary, body, props)
+	assert(summary ~= nil, "notify(): at least add a summary smh")
+
+	local command = string.format("notify-send -a batteryd \"%s\"", summary)
+
+	if body ~= nil then
+		command = command .. " \"" .. body .. "\""
+	end
+
+	if props["timeout"] ~= nil then
+		command = command .. " -t " .. props.timeout
+	end
+
+	if props["icon"] ~= nil then
+		command = command .. " -i " .. props.icon
+	end
+
+	if props["urgency"] ~= nil then
+		command = command .. " -u " .. props.urgency
+	end
+
+	if config.use_stdout then
+		return os.execute("echo " .. command)
+	end
+
+	return os.execute(command)
+end
+
+local function clear_warnings()
+	if #warnings == 0 then return end
+
+	for _, warning in ipairs(warnings) do
+		if warning == "low battery" then
+			os.execute(config.on_low_warning_cleared)
+		end
+
+		if warning == "crit battery" then
+			os.execute(config.on_crit_warning_cleared)
+		end
+
+		if warning == "reserve power" then
+			os.execute(config.on_reserve_cleared)
+		end
+	end
+
+	notify("Power state", "All warnings cleared", { icon = "dialog-warning" })
+	warnings = {}
+end
+
+local function dbus_msg_iter_to_type(iter)
+	if iter == nil then return end
+
+	local variant = iter:recurse()
+	return variant:get_basic()
+end
+
+local function dbus_msg_to_type(message)
+	if message == nil then return nil end
+
+	local iter = message:iter_init()
+	return dbus_msg_iter_to_type(iter)
+end
+
+local function on_power_device_properties_changed(properties)
+	local changed_properties = {}
+	local property_iterator = properties:iter_init()
+
+	if property_iterator:next() then
+		local dictionary = property_iterator:recurse()
+
+		while dictionary:has_next() do
+			local entry = dictionary:recurse()
+			local key = entry:get_basic()
+
+			entry:next()
+
+			local value = dbus_msg_iter_to_type(entry)
+			--print(key, value)
+
+			changed_properties[key] = value
+			dictionary:next()
+		end
+	end
+
+	local battery_percent = changed_properties["Percentage"] or prev_state["Percentage"] or 100
+	local state = changed_properties["State"] or prev_state["State"]
+
+	local battery_life = changed_properties["TimeToEmpty"] or prev_state["TimeToEmpty"] or 0
+	local approx_time_hrs = math.floor(battery_life / 3600 * 10 + 0.5) / 10
+	local approx_time_mins = (approx_time_hrs - math.floor(approx_time_hrs)) * 60
+	approx_time_hrs = math.floor(approx_time_hrs)
+
+	local battery_icon = "battery-" .. math.floor(battery_percent / 10 + 0.5) * 10
+	if state == 5 or state == 2 then
+		battery_icon = battery_icon .. "-charging"
+	end
+	--print(battery_icon)
+
+	-- simple fix to prevent issues when upower doesnt fire the state changed event sometimes (this sucks)
+	-- TODO: find a better way to fix this instead of basically a band-aid fix
+	local ac_event_handled = false
+	local dc_event_handled = false
+
+	local function on_ac_pwr()
+		if ac_event_handled then return end
+		ac_event_handled = true
+
+		if config.warn_on_state_change then
+			notify("Power source changed (AC power)", "The system's battery is now charging.", { icon = battery_icon })
+		end
+
+		clear_warnings()
+		os.execute(config.on_ac_power)
+	end
+
+	local function on_dc_pwr()
+		if dc_event_handled then return end
+		dc_event_handled = true
+
+		if config.warn_on_state_change then
+			notify("Power source changed (DC power)", "The system's battery is now discharging.", { icon = battery_icon })
+		end
+
+		os.execute(config.on_dc_power)
+	end
+
+	if changed_properties["IconName"] then
+		local icon = changed_properties["IconName"]
+		local prev_icon = prev_state["IconName"] or "charging"
+
+		if (icon:find("charging") or icon:find("charged")) and not (prev_icon:find("charging") or prev_icon:find("charged")) then
+			on_ac_pwr()
+			state = 1
+		elseif not (icon:find("charging") or icon:find("charged")) and (prev_icon:find("charging") or prev_icon:find("charged")) then
+			on_dc_pwr()
+			state = 2
+		end
+	end
+
+	if changed_properties["State"] ~= nil then
+		if state == 0 and config.warn_on_state_change then
+			notify("Power state", "Unknown power state", { icon = "battery-missing" })
+		elseif state == 1 then
+			on_ac_pwr()
+		elseif state == 2 then
+			on_dc_pwr()
+		elseif state == 3 then
+			os.execute(config.on_battery_empty)
+		elseif state == 4 then
+			if config.warn_on_state_change then
+				notify("Power state", "The system's battery is fully charged (100%)", { icon = battery_icon })
+			end
+
+			clear_warnings()
+			if not ac_event_handled then
+				os.execute(config.on_ac_power)
+			end
+		elseif state == 5 and not config.warn_on_state_change then
+			if config.warn_on_state_change then
+				notify("Awaiting charge", "The system's battery is pending charge.", { icon = battery_icon })
+			end
+
+			os.execute(config.on_ac_power)
+		elseif state == 6 then
+			if config.warn_on_state_change then
+				notify("Awaiting discharge", "The system's battery is pending discharge.", { icon = battery_icon })
+			end
+
+			os.execute(config.on_dc_power)
+		end
+	end
+
+	if battery_percent <= config.low_battery_threshold and not table_find(warnings, "low battery") and state == 2 then
+		if config.warn_on_low_battery then
+			local msg = "Connect the system to AC power before it's wraps."
+			if config.reserve_power_threshold == config.low_battery_threshold then
+				msg = "System performance has been limited to save power. Connect the system to AC power before it's wraps."
+			end
+
+			notify(string.format("Power level low (%d%%, %dh %dm remain)", battery_percent, approx_time_hrs, approx_time_mins), msg, { body = battery_icon, urgency = 2 })
+		end
+
+		os.execute(config.on_low_battery)
+	end
+
+	if battery_percent <= config.crit_battery_threshold and not table_find(warnings, "crit battery") and state == 2 then
+		if config.warn_on_crit_battery then
+			local msg = "Connect the system to AC power before it's wraps."
+			if config.reserve_power_threshold == config.crit_battery_threshold then
+				msg = "System performance has been limited to save power. Connect the system to AC power before it's wraps."
+			end
+
+			notify(string.format("Power level critical (%d%%, %dh %dm remain)", battery_percent, approx_time_hrs, approx_time_mins), msg, { body = battery_icon, urgency = 2 })
+		end
+
+		os.execute(config.on_crit_battery)
+	end
+
+	if battery_percent <= config.reserve_power_threshold and not table_find(warnings, "reserve power") and state == 2 then
+		os.execute(config.on_reserve)
+	end
+
+	if battery_percent <= config.action_threshold and state == 2 then
+		os.execute(config.action_cmd)
+	end
+
+	prev_state = changed_properties
+end
+
+if not parse_conf((os.getenv("HOME") or "~") .. "/.config/batteryd/config") then
+	parse_conf("./config")
+end
+
+os.execute(config.on_ac_power)
+
+local conn, conn_err = ldbus.bus.get("system")
+if conn == nil then
+	print(string.format("failed to get system bus (%s)", conn_err or "unknown error"))
+end
+
+local device_enum_reply, device_enum_reply_err = upower_method_call(conn, "/org/freedesktop/UPower", "org.freedesktop.UPower", "EnumerateDevices")
+if device_enum_reply == nil then
+	error(string.format("failed to enumerate upower devices (%s)", device_enum_reply_err or "unknown error"))
+end
+
+local device_iterator = device_enum_reply:iter_init()
+local device_array_iterator = device_iterator:recurse()
+local monitored_devices = {}
+
+while device_array_iterator:has_next() do
+	local device = device_array_iterator:get_basic()
+	local match = string.format("type='signal',interface='org.freedesktop.DBus.Properties',path='%s'", device)
+	local _, match_err = ldbus.bus.add_match(conn, match)
+
+	if match_err ~= nil and match_err ~= "success" and match_err ~= "already_running" then
+		error(string.format("can't monitor device %s due to the following error: %s", device, match_err or "unknown error"))
+	end
+
+	local is_power_supply = dbus_msg_to_type(
+		upower_method_call(conn, device, "org.freedesktop.DBus.Properties", "Get", {
+			{ type = "s", value = "org.freedesktop.UPower.Device" },
+			{ type = "s", value = "PowerSupply" }
+		})
+	)
+
+	-- TODO: monitor stuff like bluetooth devices instead of only the laptop's power supply
+	if is_power_supply == true then
+		print(string.format("monitoring %s", device))
+		conn:flush()
+
+		local properties, properties_fetch_error = upower_method_call(conn, device, "org.freedesktop.DBus.Properties", "GetAll", {
+			{ type = "s", value = "org.freedesktop.UPower.Device" }
+		})
+
+		if properties == nil then
+			error(string.format("can't monitor device %s due to the following error: %s", device, properties_fetch_error or "unknown error"))
+		end
+
+		table.insert(monitored_devices, device)
+		on_power_device_properties_changed(properties)
+	end
+
+	device_array_iterator:next()
+end
+
+while true do
+	conn:read_write(1000)
+
+	local signal = conn:pop_message()
+	if signal ~= nil and signal:get_interface() == "org.freedesktop.DBus.Properties" and signal:get_member() == "PropertiesChanged" and table_find(monitored_devices, signal:get_path()) ~= nil then
+		on_power_device_properties_changed(signal)
+	end
+end
