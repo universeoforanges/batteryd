@@ -435,7 +435,6 @@ while true do
 	conn:read_write(1000)
 
 	local signal = conn:pop_message()
-	print("ok")
 	if signal ~= nil and signal:get_interface() == "org.freedesktop.DBus.Properties" and signal:get_member() == "PropertiesChanged" and table_find(monitored_devices, signal:get_path()) ~= nil then
 		on_power_device_properties_changed(signal)
 	end
