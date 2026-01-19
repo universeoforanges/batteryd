@@ -4,6 +4,9 @@ batteryd is a simple, configurable power management daemon written in Lua 5.1 fo
 ## Why batteryd?
 Originally, batteryd was made for my personal use. Personally, I found it pretty annoying that I couldn't find any configurable power management daemons, so I just made my own, then eventually opened it to the public.
 
+## Dependencies
+- [ldbus](https://github.com/daurnimator/ldbus)
+
 ## Configuring batteryd
 batteryd will check the following directories for a file named "config".
 - `$HOME/.config/batteryd`
