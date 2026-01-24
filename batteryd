@@ -26,6 +26,7 @@ local config = {
 
 local prev_state = {}
 local warnings = {}
+local is_ac = false
 
 -- utility
 local function starts_with(x, y)
@@ -258,6 +259,7 @@ local function on_power_device_properties_changed(properties)
 			notify("Power source changed (AC power)", "The system's battery is now charging.", { icon = battery_icon })
 		end
 
+		is_ac = true
 		clear_warnings()
 		os.execute(config.on_ac_power)
 	end
@@ -270,6 +272,7 @@ local function on_power_device_properties_changed(properties)
 			notify("Power source changed (DC power)", "The system's battery is now discharging.", { icon = battery_icon })
 		end
 
+		is_ac = false
 		os.execute(config.on_dc_power)
 	end
 
@@ -319,7 +322,7 @@ local function on_power_device_properties_changed(properties)
 		end
 	end
 
-	if battery_percent <= config.low_battery_threshold and not table_find(warnings, "low battery") and state == 2 then
+	if battery_percent <= config.low_battery_threshold and not table_find(warnings, "low battery") and not is_ac then
 		if config.warn_on_low_battery then
 			local msg = "Connect the system to AC power before it's wraps."
 			if config.reserve_power_threshold == config.low_battery_threshold then
@@ -328,12 +331,13 @@ local function on_power_device_properties_changed(properties)
 
 			notify(string.format("Power level low (%d%%, %dh %dm remain)", battery_percent, approx_time_hrs, approx_time_mins), msg, { icon = battery_icon, urgency = "critical" })
 		end
+		print("low battery!")
 
 		table.insert(warnings, "low battery")
 		os.execute(config.on_low_battery)
 	end
 
-	if battery_percent <= config.crit_battery_threshold and not table_find(warnings, "crit battery") and state == 2 then
+	if battery_percent <= config.crit_battery_threshold and not table_find(warnings, "crit battery") and not is_ac then
 		if config.warn_on_crit_battery then
 			local msg = "Connect the system to AC power before it's wraps."
 			if config.reserve_power_threshold == config.crit_battery_threshold then
@@ -342,16 +346,17 @@ local function on_power_device_properties_changed(properties)
 
 			notify(string.format("Power level critical (%d%%, %dh %dm remain)", battery_percent, approx_time_hrs, approx_time_mins), msg, { icon = battery_icon, urgency = "critical" })
 		end
+		print("critical battery!")
 
 		table.insert(warnings, "crit battery")
 		os.execute(config.on_crit_battery)
 	end
 
-	if battery_percent <= config.reserve_power_threshold and not table_find(warnings, "reserve power") and state == 2 then
+	if battery_percent <= config.reserve_power_threshold and not table_find(warnings, "reserve power") and not is_ac then
 		os.execute(config.on_reserve)
 	end
 
-	if battery_percent <= config.action_threshold and state == 2 then
+	if battery_percent <= config.action_threshold and not is_ac then
 		os.execute(config.action_cmd)
 	end
 
@@ -408,8 +413,10 @@ while device_array_iterator:has_next() do
 		if state ~= nil then
 			if state == 1 or state == 4 or state == 5 then
 				os.execute(config.on_ac_power)
+				is_ac = true
 			else
 				os.execute(config.on_dc_power)
+				is_ac = false
 			end
 		end
 
