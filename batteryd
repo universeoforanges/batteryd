@@ -24,9 +24,12 @@ local config = {
 	action_cmd = "systemctl poweroff -i"
 }
 
+local power_supply = "nothing"
 local prev_state = {}
 local warnings = {}
 local is_ac = false
+
+local external_power_devices = {}
 
 -- utility
 local function starts_with(x, y)
@@ -150,7 +153,7 @@ local function upower_method_call(conn, path, interface, method, arguments)
 end
 
 local function notify(summary, body, props)
-	assert(summary ~= nil, "notify(): at least add a summary smh")
+	assert(summary ~= nil, "notify(): invalid usage")
 
 	local command = string.format("notify-send -a batteryd \"%s\"", summary)
 
@@ -210,6 +213,20 @@ local function dbus_msg_to_type(message)
 
 	local iter = message:iter_init()
 	return dbus_msg_iter_to_type(iter)
+end
+
+local function add_external_power_device(device)
+	assert(device ~= nil and type(device) == "string", "add_external_power_device(): invalid usage")
+
+	if external_power_devices[device] == nil then
+		external_power_devices[device] = {
+			prev_state = {},
+			warnings = {},
+			is_ac = ac
+		}
+	end
+
+	return external_power_devices[device]
 end
 
 local function on_power_device_properties_changed(properties)
@@ -365,8 +382,8 @@ local function on_power_device_properties_changed(properties)
 	end
 end
 
-if not parse_conf((os.getenv("HOME") or "~") .. "/.config/batteryd/config") then
-	parse_conf("./config")
+if not (parse_conf((os.getenv("HOME") or "~") .. "/.config/batteryd/config") or parse_conf("/etc/batteryd/config") or parse_conf("./config")) then
+	print("warning: no config file found in ~/.config, /etc, or ./. falling back to default config")
 end
 
 local conn, conn_err = ldbus.bus.get("system")
@@ -399,9 +416,17 @@ while device_array_iterator:has_next() do
 		})
 	)
 
+	local type = dbus_msg_to_type(
+		upower_method_call(conn, device, "org.freedesktop.DBus.Properties", "Get", {
+			{ type = "s", value = "org.freedesktop.UPower.Device" },
+			{ type = "s", value = "Type" }
+		})
+	)
+
 	-- TODO: monitor stuff like bluetooth devices instead of only the laptop's power supply
-	if is_power_supply == true then
-		print(string.format("monitoring %s", device))
+	if is_power_supply == true and type == 2 then
+		print(string.format("monitoring power supply %s", device))
+		power_supply = device
 
 		local state = dbus_msg_to_type(
 			upower_method_call(conn, device, "org.freedesktop.DBus.Properties", "Get", {
@@ -431,6 +456,22 @@ while device_array_iterator:has_next() do
 		table.insert(monitored_devices, device)
 		on_power_device_properties_changed(properties)
 	end
+	
+	--[[else
+		print(string.format("monitoring device %s", device))
+
+		local dev_data = add_external_power_device(device)
+		local state = dbus_msg_to_type(
+			upower_method_call(conn, device, "org.freedesktop.DBus.Properties", "Get", {
+				{ type = "s", value = "org.freedesktop.UPower.Device" },
+				{ type = "s", value = "State" }
+			})
+		)
+
+		if state ~= nil then
+			device.is_ac = state == 1 or state == 4 or state == 5
+		end
+	end]]
 
 	device_array_iterator:next()
 end
