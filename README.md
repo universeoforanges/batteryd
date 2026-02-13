@@ -8,9 +8,10 @@ Originally, batteryd was made for my personal use. Personally, I found it pretty
 - [ldbus](https://github.com/daurnimator/ldbus)
 
 ## Configuring batteryd
-batteryd will check the following directories for a file named "config".
-- `$HOME/.config/batteryd`
-- `./`
+batteryd will check the following directories for a file named "config" in the following order:
+1. `$HOME/.config/batteryd`
+2. `/etc/batteryd`
+3. `./`
 
 ### Default config
 ```
