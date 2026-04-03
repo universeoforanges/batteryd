@@ -21,7 +21,8 @@ local config = {
 	on_low_warning_cleared = "",
 	on_crit_warning_cleared = "",
 	on_reserve = "",
-	action_cmd = "systemctl poweroff -i"
+	action_cmd = "systemctl poweroff -i",
+	notif_header = "batteryd"
 }
 
 local power_supply = "nothing"
@@ -155,7 +156,7 @@ end
 local function notify(summary, body, props)
 	assert(summary ~= nil, "notify(): invalid usage")
 
-	local command = string.format("notify-send -a batteryd \"%s\"", summary)
+	local command = string.format("notify-send -a %s \"%s\"", config.notif_header, summary)
 
 	if body ~= nil then
 		command = command .. " \"" .. body .. "\""
@@ -174,7 +175,8 @@ local function notify(summary, body, props)
 	end
 
 	if config.use_stdout then
-		return os.execute("echo " .. command)
+		print(summary)
+		return 0
 	end
 
 	return os.execute(command)

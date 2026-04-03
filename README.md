@@ -1,5 +1,5 @@
 # batteryd
-batteryd is a simple, configurable power management daemon written in Lua 5.1 for Linux.
+batteryd is a simple, configurable power management daemon written in Lua 5.1.
 
 ## Why batteryd?
 Originally, batteryd was made for my personal use. Personally, I found it pretty annoying that I couldn't find any configurable power management daemons, so I just made my own, then eventually opened it to the public.
@@ -65,4 +65,7 @@ ON_LOW_WARNING_CLEARED = ""
 
 # the command to run when the system is no longer running on reserve power (default: none)
 ON_RESERVE_CLEARED = ""
+
+# the application name to use in notifications, literally just to make your rice look cooler (default: batteryd)
+NOTIF_HEADER = "batteryd"
 ```
