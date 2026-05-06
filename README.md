@@ -37,7 +37,7 @@ CRIT_BATTERY_THRESHOLD = 10
 RESERVE_POWER_THRESHOLD = 20
 
 # extra commands to run when the battery capacity falls below the percentage set by RESERVE_POWER_THRESHOLD. (default: none)
-ON_RESERVE_POWER = ""
+ON_RESERVE = ""
 
 # threshold that specifies when to run the specified action (default is 5%)
 ACTION_THRESHOLD = 5
