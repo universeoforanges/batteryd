@@ -68,4 +68,7 @@ ON_RESERVE_CLEARED = ""
 
 # the application name to use in notifications, literally just to make your rice look cooler (default: batteryd)
 NOTIF_HEADER = "batteryd"
+
+# use only symbolic icons when sending notifications (default: false)
+USE_SYMBOLIC_ICONS = false
 ```

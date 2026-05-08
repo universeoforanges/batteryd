@@ -1,5 +1,5 @@
 #!/usr/bin/env lua5.1
-local BATTERYD_VERSION = "1.1.0"
+local BATTERYD_VERSION = "1.1.1"
 
 local ldbus = require("ldbus")
 
@@ -23,14 +23,14 @@ local config = {
 	on_crit_warning_cleared = "",
 	on_reserve = "",
 	action_cmd = "systemctl poweroff -i",
-	notif_header = "batteryd"
+	notif_header = "batteryd",
+
+	use_symbolic_icons = false
 }
 
 local prev_state = {}
 local warnings = {}
 local is_ac = false
-
-local external_power_devices = {}
 
 -- utility
 local function starts_with(x, y)
@@ -98,6 +98,10 @@ local function parse_conf(fpath)
 					return false
 				end
 			elseif type(config[left_hand]) == "boolean" then
+				if string.sub(right_hand, 1, 1) == " " then
+					right_hand = string.sub(right_hand, 2, #right_hand)
+				end
+
 				right_hand = right_hand == "true" or right_hand == "1"
 			elseif type(config[left_hand]) ~= "string" then
 				file:close()
@@ -250,6 +254,10 @@ local function on_power_device_properties_changed(properties)
 		battery_icon = battery_icon .. "-charging"
 	end
 
+	if config.use_symbolic_icons then
+		battery_icon = battery_icon .. "-symbolic"
+	end
+
 	-- simple fix to prevent issues when upower doesnt fire the state changed event sometimes (this sucks)
 	-- TODO: find a better way to fix this instead of basically a band-aid fix
 	local ac_event_handled = false
@@ -295,7 +303,12 @@ local function on_power_device_properties_changed(properties)
 
 	if changed_properties["State"] ~= nil then
 		if state == 0 and config.warn_on_state_change then
-			notify("Power state", "ERROR: Unknown power state", { icon = "battery-missing" })
+			local nicon = "battery-missing"
+			if config.use_symbolic_icons then
+				nicon = nicon .. "-symbolic"
+			end
+
+			notify("Power state", "ERROR: Unknown power state", { icon = nicon })
 		elseif state == 1 then
 			on_ac_pwr()
 		elseif state == 2 then
