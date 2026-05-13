@@ -1,5 +1,5 @@
 #!/usr/bin/env lua5.1
-local BATTERYD_VERSION = "1.1.1"
+local BATTERYD_VERSION = "1.1.2"
 
 local ldbus = require("ldbus")
 
@@ -261,30 +261,27 @@ local function on_power_device_properties_changed(properties)
 	-- simple fix to prevent issues when upower doesnt fire the state changed event sometimes (this sucks)
 	-- TODO: find a better way to fix this instead of basically a band-aid fix
 	local ac_event_handled = false
-	local dc_event_handled = false
 
 	local function on_ac_pwr()
-		if ac_event_handled then return end
-		ac_event_handled = true
+		if is_ac then return end
+		is_ac = false
 
 		if config.warn_on_state_change then
 			notify("Power source changed (AC power)", "The system's battery is now charging.", { icon = battery_icon })
 		end
 
-		is_ac = true
 		clear_warnings()
 		os.execute(config.on_ac_power)
 	end
 
 	local function on_dc_pwr()
-		if dc_event_handled then return end
-		dc_event_handled = true
+		if not is_ac then return end
+		is_ac = false
 
 		if config.warn_on_state_change then
 			notify("Power source changed (DC power)", "The system's battery is now discharging.", { icon = battery_icon })
 		end
 
-		is_ac = false
 		os.execute(config.on_dc_power)
 	end
 
@@ -321,15 +318,17 @@ local function on_power_device_properties_changed(properties)
 			end
 
 			clear_warnings()
-			if not ac_event_handled then
+			if not is_ac then
 				os.execute(config.on_ac_power)
 			end
 		elseif state == 5 then
 			if config.warn_on_state_change then
-				notify("Power state", string.format("The system's battery has reached its charge limit (%d)", battery_percent), { icon = battery_icon })
+				notify("Power state", string.format("The system's battery has reached its charge limit (%d%%)", battery_percent), { icon = battery_icon })
 			end
 
-			os.execute(config.on_ac_power)
+			if not is_ac then
+				os.execute(config.on_ac_power)
+			end
 		elseif state == 6 then
 			os.execute(config.on_dc_power)
 		end
